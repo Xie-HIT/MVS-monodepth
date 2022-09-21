@@ -66,10 +66,10 @@ class FeatureNet(nn.Module):
         )
 
         self.inner1 = ConvBnRelu(in_channels=self.base_channels, out_channels=self.base_channels * 4, kernel_size=1,
-                                 stride=1, padding=1, bias=True)
+                                 stride=1, padding=0, bias=True)
 
         self.inner2 = ConvBnRelu(in_channels=self.base_channels * 2, out_channels=self.base_channels * 4, kernel_size=1,
-                                 stride=1, padding=1, bias=True)
+                                 stride=1, padding=0, bias=True)
 
         self.out1 = ConvBnRelu(in_channels=self.base_channels * 4, out_channels=self.base_channels, kernel_size=3,
                                stride=1, padding=1, bias=False)
@@ -78,23 +78,27 @@ class FeatureNet(nn.Module):
                                stride=1, padding=1, bias=False)
 
         self.out3 = ConvBnRelu(in_channels=self.base_channels * 4, out_channels=self.base_channels * 4, kernel_size=1,
-                               stride=1, padding=1, bias=False)
+                               stride=1, padding=0, bias=False)
 
         self.out_channels = [self.base_channels * 4, self.base_channels * 2, self.base_channels]
 
     def forward(self, x):
         x1 = self.conv0(x)
-        x2 = self.conv1(x)
-        x3 = self.conv2(x)
+        x2 = self.conv1(x1)
+        x3 = self.conv2(x2)
 
         intra_feat3 = x3
         intra_feat2 = F.interpolate(intra_feat3, scale_factor=2, mode='nearest') + self.inner2(x2)
         intra_feat1 = F.interpolate(intra_feat2, scale_factor=2, mode='nearest') + self.inner1(x1)
 
         outputs = dict()
-        outputs['stage1'] = self.out3(intra_feat3)  # (H/4, W/4)
-        outputs['stage2'] = self.out2(intra_feat2)  # (H/2, W/2)
-        outputs['stage3'] = self.out1(intra_feat1)  # (H, W)
+        outputs['stage1'] = self.out3(intra_feat3)  # (B, 4*C, H/4, W/4)
+        outputs['stage2'] = self.out2(intra_feat2)  # (B, 2*C, H/2, W/2)
+        outputs['stage3'] = self.out1(intra_feat1)  # (B, C, H, W)
+
+        outputs['stage1'] = F.normalize(outputs['stage1'], p=2, dim=1)  # (B, 4*C, H/4, W/4)
+        outputs['stage2'] = F.normalize(outputs['stage2'], p=2, dim=1)  # (B, 2*C, H/4, W/4)
+        outputs['stage3'] = F.normalize(outputs['stage3'], p=2, dim=1)  # (B, C, H/4, W/4)
 
         return outputs
 
@@ -165,29 +169,43 @@ class ScalePrediction(nn.Module):
 
             return warped_volume
 
-        def compute_cost(ref_volume, warped_volume):
+        def compute_cost(ref_volume, warped_volume, uncertainty, type):
             """
 
             :param ref_volume: (B, C, Nscale, H, W)
             :param warped_volume: (B, C, Nscale, H, W)
+            :param uncertainty: (B, H, W)
+            :param type: choose from 'L2' or 'correlation'
             :return: cost_volume_pairwise: (B, 1, Nscale, H, W)
             """
-            cost_volume_pairwise = torch.norm(ref_volume.sub_(warped_volume), p=2, dim=1).unsqueeze(1)  # L2 norm
+            if type is 'L2':
+                cost_volume_pairwise = torch.norm(ref_volume.sub_(warped_volume), p=2, dim=1, keepdim=True)  # L2 norm
+            elif type is 'correlation':
+                cost_volume_pairwise = torch.sum(ref_volume * warped_volume, dim=1, keepdim=True)  # (B, Nscale, H, W)
+            else:
+                raise NotImplementedError()
+
+            if uncertainty is not None:
+                num_scale = ref_volume.shape[2]
+                uncertainty = F.sigmoid(uncertainty.unsqueeze(1).unsqueeze(2).repeat(1, 1, num_scale, 1, 1))
+                cost_volume_pairwise = cost_volume_pairwise * uncertainty  # (B, 1, Nscale, H, W)
 
             return cost_volume_pairwise
 
-        def build_cost_volume(ref_volume, warped_volumes):
+        def build_cost_volume(ref_volume, warped_volumes, uncertainty):
             """
 
             :param ref_volume: (B, C, Nscale, H, W)
             :param warped_volumes: (V-1) (B, C, Nscale, H, W)
+            :param uncertainty: (B, H, W)
             :return: cost_volume: (B, 1, Nscale, 1, 1)
             """
             num_src_views = len(warped_volumes)
             cost_volume = 0.0
 
             for i in range(num_src_views):
-                cost_volume_pairwise = compute_cost(ref_volume, warped_volumes[i])  # (B, 1, Nscale, H, W)
+                cost_volume_pairwise = compute_cost(ref_volume, warped_volumes[i],
+                                                    uncertainty, 'correlation')  # (B, 1, Nscale, H, W)
                 cost_volume = cost_volume + cost_volume_pairwise
 
             cost_volume.div_(num_src_views)  # (B, 1, Nscale, H, W)
@@ -210,18 +228,21 @@ class ScalePrediction(nn.Module):
         self.build_cost_volume = build_cost_volume
         self.compute_expectation = compute_expectation
 
-    def forward(self, features, intrinsics, cam_to_world, scale_hypo, depth_init):
+    def forward(self, features, intrinsics, cam_to_world, scale_hypo, depth_init, uncertainty):
         """
                     
         :param features: (V) (B, C, H, W)
         :param intrinsics: (V) (B, 3, 3)
         :param cam_to_world: (V) (B, 4, 4)
-        :param scale_hypo: (B, Nscale)
+        :param scale_hypo: (Nscale)
         :param depth_init: (B, H, W)
+        :param uncertainty: (B, H, W)
         :return: scale: (B)
         """
         num_views = len(features)
-        num_scale = scale_hypo.size(1)
+        num_scale = len(scale_hypo)
+        batch = depth_init.shape[0]
+        scale_hypo = scale_hypo.unsqueeze(0).repeat(batch, 1)
 
         ref_feature, src_feature_tuple = features[0], features[1:]
         ref_intrinsics, src_intrinsics_tuple = intrinsics[0], intrinsics[1:]
@@ -239,7 +260,7 @@ class ScalePrediction(nn.Module):
             )  # (B, C, Nscale, H, W)
             warped_volumes.append(warped_volume)
 
-        cost_volume = self.build_cost_volume(ref_volume, warped_volumes).squeeze()  # (B, Nscale)
+        cost_volume = self.build_cost_volume(ref_volume, warped_volumes, uncertainty).squeeze()  # (B, Nscale)
         prob_volume = F.softmax(cost_volume, dim=1)
         scale = self.compute_expectation(prob_volume, scale_hypo)  # (B)
 
@@ -309,29 +330,43 @@ class DepthPrediction(nn.Module):
 
             return warped_volume
 
-        def compute_cost(ref_volume, warped_volume):
+        def compute_cost(ref_volume, warped_volume, uncertainty, type):
             """
 
             :param ref_volume: (B, C, Ndepth, H, W)
             :param warped_volume: (B, C, Ndepth, H, W)
+            :param uncertainty: (B, H, W)
+            :param type: choose from 'L2' or 'correlation'
             :return: cost_volume_pairwise: (B, 1, Ndepth, H, W)
             """
-            cost_volume_pairwise = torch.norm(ref_volume.sub_(warped_volume), p=2, dim=1).unsqueeze(1)  # L2 norm
+            if type is 'L2':
+                cost_volume_pairwise = torch.norm(ref_volume.sub_(warped_volume), p=2, dim=1, keepdim=True)  # L2 norm
+            elif type is 'correlation':
+                cost_volume_pairwise = torch.sum(ref_volume * warped_volume, dim=1, keepdim=True)  # (B, 1, Ndepth, H, W)
+            else:
+                raise NotImplementedError()
+
+            if uncertainty is not None:
+                num_depth = ref_volume.shape[2]
+                uncertainty = F.sigmoid(uncertainty.unsqueeze(1).unsqueeze(2).repeat(1, 1, num_depth, 1, 1))
+                cost_volume_pairwise = cost_volume_pairwise * uncertainty  # (B, 1, Ndepth, H, W)
 
             return cost_volume_pairwise
 
-        def build_cost_volume(ref_volume, warped_volumes):
+        def build_cost_volume(ref_volume, warped_volumes, uncertainty):
             """
 
             :param ref_volume: (B, C, Ndepth, H, W)
             :param warped_volumes: (V-1) (B, C, Ndepth, H, W)
+            :param uncertainty: (B, H, W)
             :return: cost_volume: (B, 1, Ndepth, H, W)
             """
             num_src_views = len(warped_volumes)
             cost_volume_pairwises = []
 
             for i in range(num_src_views):
-                cost_volume_pairwise = compute_cost(ref_volume, warped_volumes[i])  # (B, 1, Ndepth, H, W)
+                cost_volume_pairwise = compute_cost(ref_volume, warped_volumes[i],
+                                                    uncertainty, 'correlation')  # (B, 1, Ndepth, H, W)
                 cost_volume_pairwises.append(cost_volume_pairwise)
 
             cost_volume, _ = torch.min(torch.stack(cost_volume_pairwises, dim=0), dim=0)  # (B, 1, Ndepth, H, W)
@@ -354,19 +389,23 @@ class DepthPrediction(nn.Module):
             cost_volume_neighborhood = cost_volume_neighborhood.reshape(batch, num_depth, -1, height, width)  # (B, Ndepth, N, H, W)
             num_neighbors = cost_volume_neighborhood.shape[2]
 
-            depth_hypo_neighborhood = F.unfold(input=depth_hypo, kernel_size=5, stride=1,
-                                               padding=2)  # (B, Ndepth * kernel_size * kernel_size, H * W)
-            depth_hypo_neighborhood = depth_hypo_neighborhood.reshape(batch, num_depth, num_neighbors, height, width)
-            weight_depth = depth_hypo_neighborhood - depth_hypo_neighborhood[:, :, num_neighbors//2, :, :].unsqueeze(2)
-            weight_depth = F.softmax(torch.abs(weight_depth), dim=2)   # (B, Ndepth, N, H, W)
+            with torch.no_grad():
+                depth_hypo_neighborhood = F.unfold(input=depth_hypo, kernel_size=5, stride=1,
+                                                   padding=2)  # (B, Ndepth * kernel_size * kernel_size, H * W)
+                depth_hypo_neighborhood = depth_hypo_neighborhood.reshape(batch, num_depth, num_neighbors, height, width)
+                weight_depth = depth_hypo_neighborhood - depth_hypo_neighborhood[:, :, num_neighbors // 2, :, :].unsqueeze(2)
+                weight_depth = F.softmax(-torch.abs(weight_depth), dim=2)  # (B, Ndepth, N, H, W)
 
-            ref_feature_neighborhood = F.unfold(input=ref_feature, kernel_size=5, stride=1,
-                                               padding=2)  # (B, C * kernel_size * kernel_size, H * W)
-            ref_feature_neighborhood = ref_feature_neighborhood.reshape(batch, channels, num_neighbors, height, width)
-            weight_feature = ref_feature_neighborhood - ref_feature_neighborhood[:, :, num_neighbors//2, :, :].unsqueeze(2)
-            weight_feature = weight_feature.norm(p=2, dim=1, keepdim=True).repeat(1, num_depth, 1, 1, 1)  # (B, Ndepth, N, H, W)
+                ref_feature_neighborhood = F.unfold(input=ref_feature, kernel_size=5, stride=1,
+                                                    padding=2)  # (B, C * kernel_size * kernel_size, H * W)
+                ref_feature_neighborhood = ref_feature_neighborhood.reshape(batch, channels, num_neighbors, height, width)
+                # weight_feature = ref_feature_neighborhood - ref_feature_neighborhood[:, :, num_neighbors // 2, :, :].unsqueeze(2)
+                # weight_feature = weight_feature.norm(p=2, dim=1, keepdim=True).repeat(1, num_depth, 1, 1, 1)  # (B, Ndepth, N, H, W)
+                ref_feature_center = ref_feature_neighborhood[:, :, num_neighbors // 2, :, :].unsqueeze(2).repeat(1, 1, num_neighbors, 1, 1)
+                weight_feature = torch.sum(ref_feature_center * ref_feature_neighborhood, dim=1, keepdim=True)
+                weight_feature = F.softmax(weight_feature.repeat(1, num_depth, 1, 1, 1), dim=2)  # (B, Ndepth, N, H, W)
 
-            weight = weight_depth * weight_feature  # (B, Ndepth, N, H, W)
+                weight = F.softmax(weight_depth * weight_feature, dim=2)  # (B, Ndepth, N, H, W)
 
             cost_volume_aggregated = torch.sum(cost_volume_neighborhood * weight, dim=2)  # (B, Ndepth, H, W)
 
@@ -388,13 +427,14 @@ class DepthPrediction(nn.Module):
         self.cost_aggregation = cost_aggregation
         self.compute_expectation = compute_expectation
 
-    def forward(self, features, intrinsics, cam_to_world, depth_hypo):
+    def forward(self, features, intrinsics, cam_to_world, depth_hypo, uncertainty):
         """
 
         :param features: (V) (B, C, H, W)
         :param intrinsics: (V) (B, 3, 3)
         :param cam_to_world: (V) (B, 4, 4)
         :param depth_hypo: (B, Ndepth, H, W)
+        :param uncertainty: (B, H, W)
         :return: depth: (B, H, W)
         """
         num_views = len(features)
@@ -416,7 +456,7 @@ class DepthPrediction(nn.Module):
             )  # (B, C, Ndepth, H, W)
             warped_volumes.append(warped_volume)
 
-        cost_volume = self.build_cost_volume(ref_volume, warped_volumes).squeeze()  # (B, Ndepth, H, W)
+        cost_volume = self.build_cost_volume(ref_volume, warped_volumes, uncertainty).squeeze()  # (B, Ndepth, H, W)
 
         cost_volume_aggregated = self.cost_aggregation(cost_volume, ref_feature, depth_hypo)  # (B, Ndepth, H, W)
 
@@ -428,20 +468,36 @@ class DepthPrediction(nn.Module):
 
 if __name__ == "__main__":
     import warnings
-
     warnings.simplefilter("ignore", UserWarning)
 
-    test_features = [torch.randn(2, 3, 4, 4), torch.randn(2, 3, 4, 4), torch.randn(2, 3, 4, 4)]
-    test_intrinsics = [torch.randn(2, 3, 3), torch.randn(2, 3, 3), torch.randn(2, 3, 3)]
-    test_cam_to_world = [torch.randn(2, 4, 4), torch.randn(2, 4, 4), torch.randn(2, 4, 4)]
-    test_scale_hypo = torch.randn(2, 10)
-    test_depth_init = torch.randn(2, 4, 4)
-    test_depth_hypo = torch.randn(2, 10, 4, 4)
+    B = 2
+    N = 3
+    C = 3
+    H = 100
+    W = 100
+    Nscale = 10
+    Ndepth = 10
+    test_image = torch.randn(B, C, H, W)
+    test_features = []
+    test_intrinsics = []
+    test_cam_to_world = []
+    for i in range(N):
+        test_features.append(torch.randn(B, C, H, W))
+        test_intrinsics.append(torch.randn(B, 3, 3))
+        test_cam_to_world.append(torch.randn(B, 4, 4))
+    test_scale_hypo = torch.arange(Nscale, dtype=torch.float32)
+    test_depth_init = torch.randn(B, H, W)
+    test_depth_hypo = torch.randn(B, Ndepth, H, W)
+    test_uncertainty = torch.randn(B, H, W)
+
+    feature_extractor = FeatureNet(base_channels=8)
+    feature = feature_extractor(test_image)
+    print('feature stage1: {}, stage2: {}, stage3: {}'.format(feature["stage1"].shape, feature["stage2"].shape, feature["stage3"].shape))
 
     scale_predictor = ScalePrediction()
-    scale_ = scale_predictor(test_features, test_intrinsics, test_cam_to_world, test_scale_hypo, test_depth_init)
-    print('scale shape: {}'.format(scale_.shape))
+    scale = scale_predictor(test_features, test_intrinsics, test_cam_to_world, test_scale_hypo, test_depth_init, test_uncertainty)
+    print('scale shape: {}'.format(scale.shape))
 
     depth_predictor = DepthPrediction()
-    depth = depth_predictor(test_features, test_intrinsics, test_cam_to_world, test_depth_hypo)
-    print('cost_volume shape: {}'.format(depth.shape))
+    depth = depth_predictor(test_features, test_intrinsics, test_cam_to_world, test_depth_hypo, test_uncertainty)
+    print('depth shape: {}'.format(depth.shape))

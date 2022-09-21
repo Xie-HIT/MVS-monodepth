@@ -193,10 +193,13 @@ class Project3D(nn.Module):
         return pix_coords
 
 
-def upsample(x):
+def upsample(x, size=None):
     """Upsample input tensor by a factor of 2
     """
-    return F.interpolate(x, scale_factor=2, mode="nearest")
+    if size is not None:
+        return F.interpolate(x, size=size, mode="nearest")
+    else:
+        return F.interpolate(x, scale_factor=2, mode="nearest")
 
 
 def get_smooth_loss(disp, img):

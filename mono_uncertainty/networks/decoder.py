@@ -11,11 +11,13 @@ import torch
 import torch.nn as nn
 
 from collections import OrderedDict
-from monodepth2.layers import *
+from ..monodepth2.layers import *
+
 
 class MyDataParallel(nn.DataParallel):
 	def __getattr__(self, name):
 		return getattr(self.module, name)
+
 
 class DepthUncertaintyDecoder(nn.Module):
     def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True, uncert=False, dropout=False):
@@ -66,7 +68,12 @@ class DepthUncertaintyDecoder(nn.Module):
 
             if self.dropout:
                 x = F.dropout2d(x, p=self.p, training=True)
-            x = [upsample(x)]
+            if i > 0:
+                h = input_features[i - 1].shape[2]
+                w = input_features[i - 1].shape[3]
+                x = [upsample(x, size=(h, w))]
+            else:
+                x = [upsample(x)]
             if self.use_skips and i > 0:
                 x += [input_features[i - 1]]
             x = torch.cat(x, 1)

@@ -39,10 +39,10 @@ import monodepth2.kitti_utils as kitti_utils
 from monodepth2.layers import *
 from monodepth2.utils import *
 from extended_options import *
-import monodepth2.datasets as datasets
+# import monodepth2.datasets as datasets
 import monodepth2.networks as legacy
 import networks
-import progressbar
+# import progressbar
 import matplotlib.pyplot as plt
 
 import sys
@@ -169,7 +169,7 @@ def evaluate(opt):
 
     print("-> Computing predictions with size {}x{}".format(width, height))
     with torch.no_grad():
-        bar = progressbar.ProgressBar(maxval=len(paths))
+        # bar = progressbar.ProgressBar(maxval=len(paths))
         for i, image_path in enumerate(paths):
             
             # input_color = data[("color", 0, 0)].cuda()
@@ -177,7 +177,7 @@ def evaluate(opt):
                 # don't try to predict disparity for a disparity image!
                 continue
 
-                # Load image and preprocess
+            # Load image and preprocess
             input_color = pil.open(image_path).convert('RGB')
             original_width, original_height = input_color.size
             input_color = input_color.resize((width, height), pil.LANCZOS)
@@ -282,7 +282,7 @@ def evaluate(opt):
             if not os.path.exists(os.path.join(opt.output_dir, "qual", "uncert")):
                 os.makedirs(os.path.join(opt.output_dir, "qual", "uncert"))
 
-    bar = progressbar.ProgressBar(maxval=len(pred_disps))
+    # bar = progressbar.ProgressBar(maxval=len(pred_disps))
     for i in range(len(pred_disps)):
         # bar.update(i)
         # if opt.eval_stereo:
@@ -316,6 +316,7 @@ def evaluate(opt):
 
     # see you next time! 
     print("\n-> Done!")
+
 
 if __name__ == "__main__":
     warnings.simplefilter("ignore", UserWarning)
