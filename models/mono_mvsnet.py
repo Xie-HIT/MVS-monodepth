@@ -19,16 +19,20 @@ class monoMVSNet(nn.Module):
         self.depth_range_sample = depth_range_sample
         self.depth_prediction = DepthPrediction()
 
-        # scale for image pyramid
+        # scale for image pyramid: only implemented for 3 stages
         self.scale = {
             "stage1": 4.0,
             "stage2": 2.0,
             "stage3": 1.0
         }
         self.num_stage = len(self.scale)
+        assert self.num_stage == 3
 
-        # scale hypothesis: range = [0.01, 100], step = 0.01
-        self.scale_hypo = torch.arange(10000, dtype=torch.float32) * 0.01
+        # median scale hypothesis
+        self.min_depth = 0.1
+        self.max_depth = 100.0
+        step = 0.1
+        self.scale_hypo = torch.arange(start=self.min_depth, end=self.max_depth + step, step=step)
 
         # load monodepth2
         encoder = legacy.ResnetEncoder(num_layers=18, pretrained=False)
@@ -45,6 +49,7 @@ class monoMVSNet(nn.Module):
         decoder.eval()
         self.monodepth2_decoder = decoder
 
+        # TODO: Can we have different size without re-training monodepth2 ?
         self.height = encoder_dict['height']
         self.width = encoder_dict['width']
 
@@ -60,9 +65,11 @@ class monoMVSNet(nn.Module):
         with torch.no_grad():
             ref_image = images[:, 0, :]
             monodepth2_output = self.monodepth2_decoder(self.monodepth2_encoder(ref_image))
-            pred_disp, pred_depth = disp_to_depth(monodepth2_output[("disp", 0)], 0.1, 100.0)
+            pred_disp, pred_depth = disp_to_depth(monodepth2_output[("disp", 0)], self.min_depth, self.max_depth)
+            pred_depth = pred_depth / pred_depth.median()
             pred_uncert = torch.exp(monodepth2_output[("uncert", 0)])
             pred_uncert = (pred_uncert - torch.min(pred_uncert)) / (torch.max(pred_uncert) - torch.min(pred_uncert))
+
             # show_image(pred_disp)
             # show_image(pred_uncert)
             # plt.imsave(os.path.join('../test', 'disp.png'), pred_disp[0, 0].numpy(), cmap='magma')
@@ -77,18 +84,33 @@ class monoMVSNet(nn.Module):
 
         # coarse to fine
         for stage_idx in range(self.num_stage):
-            # intrinsic for image pyramid: (V) (B, 3, 3)
-            num_views = len(intrinsics)
-            intrinsics_pyramid = []
-            for view_idx in range(num_views):
-                intrinsic_pyramid = intrinsics[view_idx].clone()  # (B, 3, 3)
-                intrinsic_pyramid[:, :2, :2] = intrinsic_pyramid[:, :2, :2] / self.scale[
-                    "stage{}".format(stage_idx + 1)]
-                intrinsic_pyramid[:, :2, 2:3] = intrinsic_pyramid[:, :2, 2:3] / self.scale[
-                    "stage{}".format(stage_idx + 1)]
-                intrinsics_pyramid.append(intrinsic_pyramid)
+            stage = 'stage{}'.format(stage_idx + 1)
 
-            # TODO
+            # feature for current stage: (V) (B, C, H, W)
+            features_stage = [feature[stage] for feature in features]
+            height_stage = features_stage[0].shape[2]
+            width_stage = features_stage[0].shape[3]
+
+            # intrinsic for current stage: (V) (B, 3, 3)
+            num_views = len(intrinsics)
+            intrinsics_stage = []
+            stage_scale = self.scale[stage]
+            for view_idx in range(num_views):
+                intrinsic_stage = intrinsics[view_idx].clone()  # (B, 3, 3)
+                intrinsic_stage[:, :2, :2] = intrinsic_stage[:, :2, :2] / stage_scale
+                intrinsic_stage[:, :2, 2:3] = intrinsic_stage[:, :2, 2:3] / stage_scale
+                intrinsics_stage.append(intrinsic_stage)
+
+            # scale prediction
+            if stage == 'stage1':
+                pred_depth_stage = F.interpolate(pred_depth, size=(height_stage, width_stage), mode='bilinear')
+                pred_uncert_stage = F.interpolate(pred_uncert, size=(height_stage, width_stage), mode='bilinear')
+                scale = self.scale_prediction(features_stage, intrinsics_stage, cam_to_world, self.scale_hypo,
+                                              pred_depth_stage.squeeze(1), pred_uncert_stage.squeeze(1))
+
+            # adaptive depth hypothesis
+
+            # depth prediction
 
 
 if __name__ == "__main__":

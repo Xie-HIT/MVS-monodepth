@@ -141,12 +141,11 @@ class ScalePrediction(nn.Module):
                 rot = proj[:, :3, :3]
                 trans = proj[:, :3, 3:4]
 
-                scale_hypo = scale_hypo.reshape(batch, 1, num_scale, 1, 1).repeat(1, 1, 1, height,
-                                                                                  width)  # (B, 1, Nscale, H, W)
+                scale_hypo = scale_hypo.reshape(batch, 1, num_scale, 1, 1)  # (B, 1, Nscale, 1, 1)
                 depth = depth_init.unsqueeze(2).repeat(1, 1, num_scale, 1, 1) * scale_hypo  # (B, 1, Nscale, H, W)
 
                 y, x = torch.meshgrid(torch.arange(0, height, dtype=torch.float32, device=device),
-                                      torch.arange(0, height, dtype=torch.float32, device=device)
+                                      torch.arange(0, width, dtype=torch.float32, device=device)
                                       )
                 y, x = y.contiguous(), x.contiguous()
                 y, x = y.view(height * width), x.view(height * width)
@@ -234,9 +233,9 @@ class ScalePrediction(nn.Module):
         :param features: (V) (B, C, H, W)
         :param intrinsics: (V) (B, 3, 3)
         :param cam_to_world: (V) (B, 4, 4)
-        :param scale_hypo: (Nscale)
-        :param depth_init: (B, H, W)
-        :param uncertainty: (B, H, W)
+        :param scale_hypo: (Nscale), between [min_depth, max_depth], step 0.1
+        :param depth_init: (B, H, W), median depth 1
+        :param uncertainty: (B, H, W), between [0, 1]
         :return: scale: (B)
         """
         num_views = len(features)
@@ -260,7 +259,8 @@ class ScalePrediction(nn.Module):
             )  # (B, C, Nscale, H, W)
             warped_volumes.append(warped_volume)
 
-        cost_volume = self.build_cost_volume(ref_volume, warped_volumes, uncertainty).squeeze()  # (B, Nscale)
+        cost_volume = self.build_cost_volume(ref_volume, warped_volumes, uncertainty)\
+            .squeeze(1).squeeze(2).squeeze(2)  # (B, Nscale)
         prob_volume = F.softmax(cost_volume, dim=1)
         scale = self.compute_expectation(prob_volume, scale_hypo)  # (B)
 
@@ -307,7 +307,7 @@ class DepthPrediction(nn.Module):
                 depth = depth_hypo.unsqueeze(1)  # (B, 1, Ndepth, H, W)
 
                 y, x = torch.meshgrid(torch.arange(0, height, dtype=torch.float32, device=device),
-                                      torch.arange(0, height, dtype=torch.float32, device=device)
+                                      torch.arange(0, width, dtype=torch.float32, device=device)
                                       )
                 y, x = y.contiguous(), x.contiguous()
                 y, x = y.view(height * width), x.view(height * width)
@@ -474,7 +474,7 @@ if __name__ == "__main__":
     N = 3
     C = 3
     H = 100
-    W = 100
+    W = 200
     Nscale = 10
     Ndepth = 10
     test_image = torch.randn(B, C, H, W)
