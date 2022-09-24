@@ -28,11 +28,16 @@ class monoMVSNet(nn.Module):
         self.num_stage = len(self.scale)
         assert self.num_stage == 3
 
-        # median scale hypothesis
+        # scale hypothesis
         self.min_depth = 0.1
         self.max_depth = 100.0
         step = 0.1
         self.scale_hypo = torch.arange(start=self.min_depth, end=self.max_depth + step, step=step)
+
+        # depth hypothesis
+        self.num_depth = (49, 33, 9)
+        self.depth_interval = 0.1
+        self.depth_interal_ratio = (4, 2, 1)
 
         # load monodepth2
         encoder = legacy.ResnetEncoder(num_layers=18, pretrained=False)
@@ -49,7 +54,7 @@ class monoMVSNet(nn.Module):
         decoder.eval()
         self.monodepth2_decoder = decoder
 
-        # TODO: Can we have different size without re-training monodepth2 ?
+        # TODO: Can we change size without re-training monodepth2 ?
         self.height = encoder_dict['height']
         self.width = encoder_dict['width']
 
@@ -66,7 +71,6 @@ class monoMVSNet(nn.Module):
             ref_image = images[:, 0, :]
             monodepth2_output = self.monodepth2_decoder(self.monodepth2_encoder(ref_image))
             pred_disp, pred_depth = disp_to_depth(monodepth2_output[("disp", 0)], self.min_depth, self.max_depth)
-            pred_depth = pred_depth / pred_depth.median()
             pred_uncert = torch.exp(monodepth2_output[("uncert", 0)])
             pred_uncert = (pred_uncert - torch.min(pred_uncert)) / (torch.max(pred_uncert) - torch.min(pred_uncert))
 
@@ -83,13 +87,15 @@ class monoMVSNet(nn.Module):
             features.append(feature)
 
         # coarse to fine
+        output = {}
+        depth = None
         for stage_idx in range(self.num_stage):
-            stage = 'stage{}'.format(stage_idx + 1)
+            stage = "stage{}".format(stage_idx + 1)
 
             # feature for current stage: (V) (B, C, H, W)
             features_stage = [feature[stage] for feature in features]
-            height_stage = features_stage[0].shape[2]
-            width_stage = features_stage[0].shape[3]
+            height_stage = features_stage[stage_idx].shape[2]
+            width_stage = features_stage[stage_idx].shape[3]
 
             # intrinsic for current stage: (V) (B, 3, 3)
             num_views = len(intrinsics)
@@ -101,16 +107,31 @@ class monoMVSNet(nn.Module):
                 intrinsic_stage[:, :2, 2:3] = intrinsic_stage[:, :2, 2:3] / stage_scale
                 intrinsics_stage.append(intrinsic_stage)
 
-            # scale prediction
+            # scale prediction and depth hypothesis
             if stage == 'stage1':
-                pred_depth_stage = F.interpolate(pred_depth, size=(height_stage, width_stage), mode='bilinear')
-                pred_uncert_stage = F.interpolate(pred_uncert, size=(height_stage, width_stage), mode='bilinear')
+                pred_depth_stage = F.interpolate(pred_depth, size=(height_stage, width_stage), mode='bilinear').squeeze(1)
+                pred_depth_stage = pred_depth_stage / pred_depth_stage.median()
+                pred_uncert_stage = F.interpolate(pred_uncert, size=(height_stage, width_stage), mode='bilinear',
+                                                  align_corners=True).squeeze(1)
                 scale = self.scale_prediction(features_stage, intrinsics_stage, cam_to_world, self.scale_hypo,
-                                              pred_depth_stage.squeeze(1), pred_uncert_stage.squeeze(1))
+                                              pred_depth_stage, pred_uncert_stage)  # (B)
+                output["scale"] = scale
+                cur_depth = scale * pred_depth_stage
+            else:
+                cur_depth = depth.detach()
+                cur_depth = F.interpolate(cur_depth.unsqueeze(1), size=(height_stage, width_stage), mode='bilinear').squeeze(1)
+                pred_uncert_stage = F.interpolate(pred_uncert, size=(height_stage, width_stage), mode='bilinear',
+                                                  align_corners=True).squeeze(1)
 
-            # adaptive depth hypothesis
+            depth_interval = (8 - 7 * pred_uncert_stage) / 8 * self.depth_interval * self.depth_interal_ratio[stage_idx]
+            depth_hypo = self.depth_range_sample(cur_depth, self.num_depth[stage_idx],
+                                                 depth_interval, self.min_depth, self.max_depth)
 
-            # depth prediction
+            # depth prediction: (B, H, W)
+            depth = self.depth_prediction(features_stage, intrinsics_stage, cam_to_world, depth_hypo, pred_uncert_stage)
+            output["depth_stage{}".format(stage_idx + 1)] = depth
+
+        return output
 
 
 if __name__ == "__main__":
@@ -158,9 +179,19 @@ if __name__ == "__main__":
         test_image = read_image(image_path, (network.height, network.width))
         # show_image(test_image)
         test_images.append(test_image)
-        test_intrinsics.append(torch.randn(B, 3, 3))
-        test_cam_to_world.append(torch.randn(B, 4, 4))
+        test_intrinsics.append(torch.eye(3).unsqueeze(0).repeat(B, 1, 1))
+        test_cam_to_world.append(torch.eye(4).unsqueeze(0).repeat(B, 1, 1))
     test_images = torch.stack(test_images, dim=1)
     C, H, W = test_images.shape[2:]
 
-    network(test_images, test_intrinsics, test_cam_to_world)
+    test_output = network(test_images, test_intrinsics, test_cam_to_world)
+
+    print("========== shape ==========")
+    print("scale: {}".format(test_output['scale'].shape))
+    print("depth_stage1: {}".format(test_output['depth_stage1'].shape))
+    print("depth_stage2: {}".format(test_output['depth_stage2'].shape))
+    print("depth_stage3: {}".format(test_output['depth_stage3'].shape))
+
+    print("========== value ==========")
+    print("scale: {}".format(test_output['scale'].detach()))
+    show_image(10 / test_output['depth_stage3'].detach())

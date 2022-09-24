@@ -3,19 +3,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def depth_range_sample(cur_depth, num_depth, depth_interval):
+def depth_range_sample(cur_depth, num_depth, depth_interval, min_depth, max_depth):
     """
 
     :param cur_depth: (B, H, W)
     :param num_depth: number of depth hypothesis
-    :param depth_interval: (B, H, W)
+    :param depth_interval: (B, H, W), have considered uncertainty
+    :param min_depth
+    :param max_depth
     :return: depth_hypo: (B, Ndepth, H, W)
     """
     device = cur_depth.device
     dtype = cur_depth.dtype
 
-    cur_depth_min = cur_depth - num_depth / 2 * depth_interval  # (B, H, W)
-    cur_depth_max = cur_depth + num_depth / 2 * depth_interval  # (B, H, W)
+    cur_depth_min = torch.clamp(cur_depth - num_depth // 2 * depth_interval, min_depth, max_depth)  # (B, H, W)
+    cur_depth_max = torch.clamp(cur_depth + num_depth // 2 * depth_interval, min_depth, max_depth)  # (B, H, W)
     new_interval = (cur_depth_max - cur_depth_min) / (num_depth - 1)  # (B, H, W)
 
     depth_hypo = cur_depth_min.unsqueeze(1) + \
@@ -456,7 +458,7 @@ class DepthPrediction(nn.Module):
             )  # (B, C, Ndepth, H, W)
             warped_volumes.append(warped_volume)
 
-        cost_volume = self.build_cost_volume(ref_volume, warped_volumes, uncertainty).squeeze()  # (B, Ndepth, H, W)
+        cost_volume = self.build_cost_volume(ref_volume, warped_volumes, uncertainty).squeeze(1)  # (B, Ndepth, H, W)
 
         cost_volume_aggregated = self.cost_aggregation(cost_volume, ref_feature, depth_hypo)  # (B, Ndepth, H, W)
 
@@ -476,7 +478,7 @@ if __name__ == "__main__":
     H = 100
     W = 200
     Nscale = 10
-    Ndepth = 10
+    Ndisp = 10
     test_image = torch.randn(B, C, H, W)
     test_features = []
     test_intrinsics = []
@@ -487,7 +489,7 @@ if __name__ == "__main__":
         test_cam_to_world.append(torch.randn(B, 4, 4))
     test_scale_hypo = torch.arange(Nscale, dtype=torch.float32)
     test_depth_init = torch.randn(B, H, W)
-    test_depth_hypo = torch.randn(B, Ndepth, H, W)
+    test_depth_hypo = torch.randn(B, Ndisp, H, W)
     test_uncertainty = torch.randn(B, H, W)
 
     feature_extractor = FeatureNet(base_channels=8)
