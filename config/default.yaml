@@ -1,0 +1,115 @@
+# === Default Config File ===
+
+---
+### Model ###
+Model:
+  # figure
+  height: 512
+  width: 640
+
+  # monodepth2 weight path
+  monodepth2_encoder_path: "../thirdparty/models/MS/Monodepth2-Self/models/weights_19/encoder.pth"
+  monodepth2_decoder_path: "../thirdparty/models/MS/Monodepth2-Self/models/weights_19/depth.pth"
+
+  # feature pyramid
+  pyramid_scale: 2.0
+  FeatureNet_base_channels: 8
+
+  # scale prediction
+  min_depth: 0.1
+  max_depth: 100.0
+  scale_step: 0.1
+
+  # depth prediction
+  num_depth: [33, 17, 9]
+  depth_interval: 0.1
+  depth_interal_ratio: [4, 2, 1]
+
+---
+### Loss ###
+Loss:
+  norm: "L1"
+
+---
+### Training ###
+# MVSNet: DTU
+# Cas-MVSNet: DTU
+# CVA-MVSNet: ScanNet, Replica
+# PatchmatchNet: DTU
+Training:
+  -
+    dataset: "DTU"
+    path: "xxx"
+    view_selection: "xxx"
+    device: "cuda"
+    num_workers: 3
+    epochs: 16  # PatchmatchNet: 8
+    batch_size: 16  # PatchmatchNet: 4
+    learing_rate:
+      lr: 0.001
+      downscale_factor: 2
+      downscale_epoch: (10, 12, 14)
+    augment:
+      flip: True
+      gamma: True
+
+    # DTU split:
+    # Validation set: scans {3, 5, 17, 21, 28, 35, 37, 38, 40, 43, 56, 59, 66, 67, 82, 86, 106, 117}.
+    # Evaluation set: scans {1, 4, 9, 10, 11, 12, 13, 15, 23, 24, 29, 32, 33, 34, 48, 49, 62, 75, 77, 110, 114, 118}.
+    # Training set: the other 79 scans.
+
+  -
+    dataset: "ScanNet"
+    path: "xxx"
+    view_selection: "xxx"
+    device: "cuda"
+    num_workers: 3
+    epochs: "xxx"
+    batch_size: "xxx"
+    learing_rate: "xxx"
+    augment:
+      flip: True
+      gamma: True
+
+  -
+    dataset: "Replica"
+    path: "xxx"
+    view_selection: "xxx"
+    device: "cuda"
+    num_workers: 3
+    epochs: "xxx"
+    batch_size: "xxx"
+    learing_rate: "xxx"
+    augment:
+      flip: True
+      doc[]gamma: True
+
+---
+### Evaluation ###
+# MVSNet: DTU, Tanks and Temples
+# Cas-MVSNet: DTU, Scene Flow dataset , KITTI 2015
+# CVA-MVSNet: ICL-NUIM, EuRoC
+# PatchmatchNet: DTU, Tanks and Temples, ETH3D
+Evaluation:
+  -
+    dataset: "DTU"
+    path: "xxx"
+    device: "cuda"
+    num_workers: 3
+    batch_size: "xxx"
+    save_path: "xxx"
+
+  -
+    dataset: "Tanks and Temples"
+    path: "xxx"
+    device: "cuda"
+    num_workers: 3
+    batch_size: "xxx"
+    save_path: "xxx"
+
+  - dataset: "KITTI"
+    path: "xxx"
+    device: "cuda"
+    num_workers: 3
+    batch_size: "xxx"
+    save_path: "xxx"

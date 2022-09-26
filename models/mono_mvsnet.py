@@ -5,58 +5,59 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from module import *
-from mono_uncertainty import *
-from mono_uncertainty.networks import DepthUncertaintyDecoder
-from mono_uncertainty.monodepth2 import networks as legacy
-from mono_uncertainty.monodepth2.layers import disp_to_depth
+from thirdparty import *
+from thirdparty.networks import DepthUncertaintyDecoder
+from thirdparty.monodepth2 import networks as legacy
+from thirdparty.monodepth2.layers import disp_to_depth
+from utils.utils import *
 
 
 class monoMVSNet(nn.Module):
-    def __init__(self, base_channels=8):
+    def __init__(self, opt):
         super(monoMVSNet, self).__init__()
-        self.feature = FeatureNet(base_channels=base_channels)
+        self.feature = FeatureNet(base_channels=opt.model['FeatureNet_base_channels'])
         self.scale_prediction = ScalePrediction()
         self.depth_range_sample = depth_range_sample
         self.depth_prediction = DepthPrediction()
 
         # scale for image pyramid: only implemented for 3 stages
         self.scale = {
-            "stage1": 4.0,
-            "stage2": 2.0,
+            "stage1": opt.model['pyramid_scale'] * opt.model['pyramid_scale'],
+            "stage2": opt.model['pyramid_scale'],
             "stage3": 1.0
         }
         self.num_stage = len(self.scale)
         assert self.num_stage == 3
 
         # scale hypothesis
-        self.min_depth = 0.1
-        self.max_depth = 100.0
-        step = 0.1
+        self.min_depth = opt.model['min_depth']
+        self.max_depth = opt.model['max_depth']
+        step = opt.model['scale_step']
         self.scale_hypo = torch.arange(start=self.min_depth, end=self.max_depth + step, step=step)
 
         # depth hypothesis
-        self.num_depth = (49, 33, 9)
-        self.depth_interval = 0.1
-        self.depth_interal_ratio = (4, 2, 1)
+        self.num_depth = opt.model['num_depth']
+        self.depth_interval = opt.model['depth_interval']
+        self.depth_interal_ratio = opt.model['depth_interal_ratio']
 
         # load monodepth2
         encoder = legacy.ResnetEncoder(num_layers=18, pretrained=False)
-        encoder_path = os.path.join("../mono_uncertainty/models/MS/Monodepth2-Self/models/weights_19/encoder.pth")
+        encoder_path = opt.model['monodepth2_encoder_path']
         encoder_dict = torch.load(encoder_path)
         encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in encoder.state_dict()})
         encoder.eval()
         self.monodepth2_encoder = encoder
 
         decoder = DepthUncertaintyDecoder(encoder.num_ch_enc, num_output_channels=1, uncert=True, dropout=False)
-        decoder_path = os.path.join("../mono_uncertainty/models/MS/Monodepth2-Self/models/weights_19/depth.pth")
+        decoder_path = opt.model['monodepth2_decoder_path']
         decoder_dict = torch.load(decoder_path)
         decoder.load_state_dict(decoder_dict)
         decoder.eval()
         self.monodepth2_decoder = decoder
 
         # TODO: Can we change size without re-training monodepth2 ?
-        self.height = encoder_dict['height']
-        self.width = encoder_dict['width']
+        self.height = encoder_dict['height']  # 640
+        self.width = encoder_dict['width']  # 192
 
     def forward(self, images, intrinsics, cam_to_world):
         """
@@ -64,7 +65,7 @@ class monoMVSNet(nn.Module):
         :param images: (B, N, C, H, W)
         :param intrinsics: (V) (B, 3, 3)
         :param cam_to_world: (V) (B, 4, 4)
-        :return:
+        :return: scale: (B)  depth_stage1: (B, H, W)  depth_stage2: (B, H, W)  depth_stage3: (B, H, W)
         """
         # run monodepth2
         with torch.no_grad():
@@ -123,7 +124,7 @@ class monoMVSNet(nn.Module):
                 pred_uncert_stage = F.interpolate(pred_uncert, size=(height_stage, width_stage), mode='bilinear',
                                                   align_corners=True).squeeze(1)
 
-            depth_interval = (8 - 7 * pred_uncert_stage) / 8 * self.depth_interval * self.depth_interal_ratio[stage_idx]
+            depth_interval = (2 - pred_uncert_stage) / 2 * self.depth_interval * self.depth_interal_ratio[stage_idx]
             depth_hypo = self.depth_range_sample(cur_depth, self.num_depth[stage_idx],
                                                  depth_interval, self.min_depth, self.max_depth)
 
@@ -145,11 +146,11 @@ if __name__ == "__main__":
         """
 
         :param image_path: path to test image
-        :param size: resize to which size
+        :param size: resize to which size (H, W)
         :return: resized image
         """
         input_color = pil.open(image_path).convert('RGB')
-        original_height, original_width = input_color.size
+        original_width, original_height = input_color.size
         if size is None:
             height, width = original_height, original_width
         else:
@@ -167,7 +168,11 @@ if __name__ == "__main__":
         img = transforms.ToPILImage()(image)
         img.show()
 
-    network = monoMVSNet(base_channels=8)
+    # read config file
+    opt = Option()
+    opt.read('../config/default.yaml')
+
+    network = monoMVSNet(opt)
 
     B = 1
     N = 3
@@ -177,6 +182,7 @@ if __name__ == "__main__":
     test_cam_to_world = []
     for i in range(N):
         test_image = read_image(image_path, (network.height, network.width))
+        # test_image = read_image(image_path)
         # show_image(test_image)
         test_images.append(test_image)
         test_intrinsics.append(torch.eye(3).unsqueeze(0).repeat(B, 1, 1))
@@ -194,4 +200,6 @@ if __name__ == "__main__":
 
     print("========== value ==========")
     print("scale: {}".format(test_output['scale'].detach()))
-    show_image(10 / test_output['depth_stage3'].detach())
+    test_disp = 10 / test_output['depth_stage3'].detach()
+    show_image(test_disp)
+    # plt.imsave(os.path.join('../test', 'test_disp.png'), test_disp[0].numpy(), cmap='magma')
