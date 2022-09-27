@@ -15,8 +15,8 @@ from ..monodepth2.layers import *
 
 
 class MyDataParallel(nn.DataParallel):
-	def __getattr__(self, name):
-		return getattr(self.module, name)
+    def __getattr__(self, name):
+        return getattr(self.module, name)
 
 
 class DepthUncertaintyDecoder(nn.Module):

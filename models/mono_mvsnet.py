@@ -1,5 +1,7 @@
 import sys
 import os
+
+import PIL.ImageOps
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -56,8 +58,11 @@ class monoMVSNet(nn.Module):
         self.monodepth2_decoder = decoder
 
         # TODO: Can we change size without re-training monodepth2 ?
-        self.height = encoder_dict['height']  # 640
-        self.width = encoder_dict['width']  # 192
+        #  ->   NO! You should keep same with training size while evaluation, and interpolate to original size later
+        self.monodepth2_height = encoder_dict['height']  # 192
+        self.monodepth2_width = encoder_dict['width']  # 640
+        self.height = opt.model['height']  # 512
+        self.width = opt.model['width']  # 640
 
     def forward(self, images, intrinsics, cam_to_world):
         """
@@ -70,15 +75,19 @@ class monoMVSNet(nn.Module):
         # run monodepth2
         with torch.no_grad():
             ref_image = images[:, 0, :]
+            ref_image = F.interpolate(ref_image, size=(self.monodepth2_height, self.monodepth2_width), mode='bilinear')
             monodepth2_output = self.monodepth2_decoder(self.monodepth2_encoder(ref_image))
             pred_disp, pred_depth = disp_to_depth(monodepth2_output[("disp", 0)], self.min_depth, self.max_depth)
             pred_uncert = torch.exp(monodepth2_output[("uncert", 0)])
             pred_uncert = (pred_uncert - torch.min(pred_uncert)) / (torch.max(pred_uncert) - torch.min(pred_uncert))
+            pred_disp = F.interpolate(pred_disp, size=(self.height, self.width), mode='bilinear')
+            pred_depth = F.interpolate(pred_depth, size=(self.height, self.width), mode='bilinear')
+            pred_uncert = F.interpolate(pred_uncert, size=(self.height, self.width), mode='bilinear')
 
             # show_image(pred_disp)
             # show_image(pred_uncert)
-            # plt.imsave(os.path.join('../test', 'disp.png'), pred_disp[0, 0].numpy(), cmap='magma')
-            # plt.imsave(os.path.join('../test', 'uncert.png'), pred_uncert[0, 0].numpy(), cmap='hot')
+            # plt.imsave(os.path.join('../test', 'test_disp.png'), pred_disp[0, 0].numpy(), cmap='magma')
+            # plt.imsave(os.path.join('../test', 'test_uncert.png'), pred_uncert[0, 0].numpy(), cmap='hot')
 
         # feature extraction: FPN
         features = []
@@ -142,32 +151,6 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     from torchvision import transforms
 
-    def read_image(image_path, size=None):
-        """
-
-        :param image_path: path to test image
-        :param size: resize to which size (H, W)
-        :return: resized image
-        """
-        input_color = pil.open(image_path).convert('RGB')
-        original_width, original_height = input_color.size
-        if size is None:
-            height, width = original_height, original_width
-        else:
-            height, width = size[0], size[1]
-        input_color = input_color.resize((width, height), pil.LANCZOS)
-        input_color = transforms.ToTensor()(input_color).unsqueeze(0)
-
-        return input_color
-
-    def show_image(input):
-        if len(input.shape) is 4:
-            image = input[0]
-        else:
-            image = input
-        img = transforms.ToPILImage()(image)
-        img.show()
-
     # read config file
     opt = Option()
     opt.read('../config/default.yaml')
@@ -176,13 +159,12 @@ if __name__ == "__main__":
 
     B = 1
     N = 3
-    image_path = '../test/test_image.jpg'
+    image_path = '../test/test_image3.jpg'
     test_images = []
     test_intrinsics = []
     test_cam_to_world = []
     for i in range(N):
-        test_image = read_image(image_path, (network.height, network.width))
-        # test_image = read_image(image_path)
+        test_image = read_image(image_path, size=(network.height, network.width))
         # show_image(test_image)
         test_images.append(test_image)
         test_intrinsics.append(torch.eye(3).unsqueeze(0).repeat(B, 1, 1))

@@ -3,7 +3,7 @@
 ---
 ### Model ###
 Model:
-  # figure
+  # figure size
   height: 512
   width: 640
 
@@ -48,7 +48,7 @@ Training:
     learing_rate:
       lr: 0.001
       downscale_factor: 2
-      downscale_epoch: (10, 12, 14)
+      downscale_epoch: [10, 12, 14]
     augment:
       flip: True
       gamma: True

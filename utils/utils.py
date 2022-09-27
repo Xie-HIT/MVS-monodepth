@@ -1,6 +1,45 @@
-import sys
-import os
+import PIL.Image as pil
+import matplotlib.pyplot as plt
+from torchvision import transforms
 import yaml
+
+
+def read_image(image_path, size=None, crop=False):
+    """
+
+    :param image_path: path to test image
+    :param size: resize to which size (H, W)
+    :param crop: whether crop the center of the image
+    :return: resized image
+    """
+    input_color = pil.open(image_path).convert('RGB')
+    original_width, original_height = input_color.size
+    if size is None:
+        height, width = original_height, original_width
+    else:
+        height, width = size[0], size[1]
+
+    left = (original_width - width) / 2
+    top = (original_height - height) / 2
+    right = (original_width + width) / 2
+    bottom = (original_height + height) / 2
+
+    if crop is True:
+        input_color = input_color.crop((left, top, right, bottom))
+    else:
+        input_color = input_color.resize((width, height), pil.LANCZOS)
+    input_color = transforms.ToTensor()(input_color).unsqueeze(0)
+
+    return input_color
+
+
+def show_image(input):
+    if len(input.shape) is 4:
+        image = input[0]
+    else:
+        image = input
+    img = transforms.ToPILImage()(image)
+    img.show()
 
 
 class Option:
