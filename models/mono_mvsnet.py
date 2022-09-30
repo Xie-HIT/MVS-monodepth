@@ -1,3 +1,6 @@
+#!/usr/bin/python
+# -*- coding: UTF-8 -*-
+
 import sys
 import os
 
@@ -32,6 +35,8 @@ class monoMVSNet(nn.Module):
         assert self.num_stage == 3
 
         # scale hypothesis
+        self.monodepth2_min_depth = opt.model['monodepth2_min_depth']
+        self.monodepth2_max_depth = opt.model['monodepth2_max_depth']
         self.min_depth = opt.model['min_depth']
         self.max_depth = opt.model['max_depth']
         step = opt.model['scale_step']
@@ -60,14 +65,14 @@ class monoMVSNet(nn.Module):
         # TODO: Can we change size without re-training monodepth2 ?
         #  ->   NO! You should keep same with training size while evaluation, and interpolate to original size later
         self.monodepth2_height = encoder_dict['height']  # 192
-        self.monodepth2_width = encoder_dict['width']  # 640
-        self.height = opt.model['height']  # 512
-        self.width = opt.model['width']  # 640
+        self.monodepth2_width = encoder_dict['width']    # 640
+        self.height = opt.model['height']                # 480
+        self.width = opt.model['width']                  # 640
 
     def forward(self, images, intrinsics, cam_to_world):
         """
 
-        :param images: (B, N, C, H, W)
+        :param images: (B, V, C, H, W)
         :param intrinsics: (V) (B, 3, 3)
         :param cam_to_world: (V) (B, 4, 4)
         :return: scale: (B)  depth_stage1: (B, H, W)  depth_stage2: (B, H, W)  depth_stage3: (B, H, W)
@@ -77,7 +82,8 @@ class monoMVSNet(nn.Module):
             ref_image = images[:, 0, :]
             ref_image = F.interpolate(ref_image, size=(self.monodepth2_height, self.monodepth2_width), mode='bilinear')
             monodepth2_output = self.monodepth2_decoder(self.monodepth2_encoder(ref_image))
-            pred_disp, pred_depth = disp_to_depth(monodepth2_output[("disp", 0)], self.min_depth, self.max_depth)
+            pred_disp, pred_depth = disp_to_depth(monodepth2_output[("disp", 0)],
+                                                  self.monodepth2_min_depth, self.monodepth2_max_depth)
             pred_uncert = torch.exp(monodepth2_output[("uncert", 0)])
             pred_uncert = (pred_uncert - torch.min(pred_uncert)) / (torch.max(pred_uncert) - torch.min(pred_uncert))
             pred_disp = F.interpolate(pred_disp, size=(self.height, self.width), mode='bilinear')
@@ -127,6 +133,8 @@ class monoMVSNet(nn.Module):
                                               pred_depth_stage, pred_uncert_stage)  # (B)
                 output["scale"] = scale
                 cur_depth = scale * pred_depth_stage
+                cur_depth[cur_depth < self.min_depth] = self.min_depth
+                cur_depth[cur_depth > self.max_depth] = self.max_depth
             else:
                 cur_depth = depth.detach()
                 cur_depth = F.interpolate(cur_depth.unsqueeze(1), size=(height_stage, width_stage), mode='bilinear').squeeze(1)
@@ -182,6 +190,6 @@ if __name__ == "__main__":
 
     print("========== value ==========")
     print("scale: {}".format(test_output['scale'].detach()))
-    test_disp = 10 / test_output['depth_stage3'].detach()
+    test_disp = 1 / test_output['depth_stage3'].detach()
     show_image(test_disp)
     # plt.imsave(os.path.join('../test', 'test_disp.png'), test_disp[0].numpy(), cmap='magma')

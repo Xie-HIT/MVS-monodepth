@@ -1,3 +1,6 @@
+#!/usr/bin/python
+# -*- coding: UTF-8 -*-
+
 import PIL.Image as pil
 import matplotlib.pyplot as plt
 from torchvision import transforms
@@ -38,8 +41,26 @@ def show_image(input):
         image = input[0]
     else:
         image = input
+    if image.max() > 1 or image.min() < 0:
+        image = (image - image.min()) / (image.max() - image.min())
     img = transforms.ToPILImage()(image)
     img.show()
+
+
+def read_depth(depth_path, scale, size=None):
+    depth = pil.open(depth_path)
+    original_width, original_height = depth.size
+    if size is None:
+        height, width = original_height, original_width
+    else:
+        height, width = size[0], size[1]
+    depth = depth.resize((width, height), pil.LANCZOS)
+    depth = transforms.ToTensor()(depth)
+
+    # depth = (depth - depth.min()) / (depth.max() - depth.min())
+    # show_image(depth)
+
+    return depth * scale
 
 
 class Option:

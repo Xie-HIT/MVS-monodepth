@@ -3,8 +3,8 @@
 ---
 ### Model ###
 Model:
-  # figure size
-  height: 512
+  # figure size: should not too large to exceed memory
+  height: 480
   width: 640
 
   # monodepth2 weight path
@@ -16,12 +16,14 @@ Model:
   FeatureNet_base_channels: 8
 
   # scale prediction
-  min_depth: 0.1
-  max_depth: 100.0
-  scale_step: 0.1
+  monodepth2_min_depth: 0.1
+  monodepth2_max_depth: 100.0
+  min_depth: 0.01
+  max_depth: 10.0
+  scale_step: 0.01
 
   # depth prediction
-  num_depth: [33, 17, 9]
+  num_depth: [17, 17, 9]
   depth_interval: 0.1
   depth_interal_ratio: [4, 2, 1]
 
@@ -37,8 +39,30 @@ Loss:
 # CVA-MVSNet: ScanNet, Replica
 # PatchmatchNet: DTU
 Training:
-  -
-    dataset: "DTU"
+
+  Replica:
+
+    path: "/media/xiechen/HDD/benchmark/tandem_replica"
+    view_selection:
+      num_views: 3
+      data_dilation: 4
+      data_stride: 1
+    device: "cuda"
+    num_workers: 3
+    epochs: 16
+    batch_size: 16
+    learing_rate:
+      lr: 0.001
+      downscale_factor: 2
+      downscale_epoch: [ 10, 12, 14 ]
+    augment:
+      crop: True
+      flip: True
+      gamma: True
+
+
+  DTU:
+
     path: "xxx"
     view_selection: "xxx"
     device: "cuda"
@@ -50,6 +74,7 @@ Training:
       downscale_factor: 2
       downscale_epoch: [10, 12, 14]
     augment:
+      crop: True
       flip: True
       gamma: True
 
@@ -58,32 +83,6 @@ Training:
     # Evaluation set: scans {1, 4, 9, 10, 11, 12, 13, 15, 23, 24, 29, 32, 33, 34, 48, 49, 62, 75, 77, 110, 114, 118}.
     # Training set: the other 79 scans.
 
-  -
-    dataset: "ScanNet"
-    path: "xxx"
-    view_selection: "xxx"
-    device: "cuda"
-    num_workers: 3
-    epochs: "xxx"
-    batch_size: "xxx"
-    learing_rate: "xxx"
-    augment:
-      flip: True
-      gamma: True
-
-  -
-    dataset: "Replica"
-    path: "xxx"
-    view_selection: "xxx"
-    device: "cuda"
-    num_workers: 3
-    epochs: "xxx"
-    batch_size: "xxx"
-    learing_rate: "xxx"
-    augment:
-      flip: True
-      doc[]gamma: True
-
 ---
 ### Evaluation ###
 # MVSNet: DTU, Tanks and Temples
@@ -91,23 +90,40 @@ Training:
 # CVA-MVSNet: ICL-NUIM, EuRoC
 # PatchmatchNet: DTU, Tanks and Temples, ETH3D
 Evaluation:
-  -
-    dataset: "DTU"
+
+  Replica:
+
+    path: "/media/xiechen/HDD/benchmark/tandem_replica"
+    view_selection:
+      num_views: 3
+      data_dilation: 4
+      data_stride: 1
+    device: "cuda"
+    num_workers: 3
+    batch_size: 16
+    save_path: "xxx"
+
+
+  DTU:
+
     path: "xxx"
     device: "cuda"
     num_workers: 3
     batch_size: "xxx"
     save_path: "xxx"
 
-  -
-    dataset: "Tanks and Temples"
+
+  Tanks and Temples:
+
     path: "xxx"
     device: "cuda"
     num_workers: 3
     batch_size: "xxx"
     save_path: "xxx"
 
-  - dataset: "KITTI"
+
+  KITTI:
+
     path: "xxx"
     device: "cuda"
     num_workers: 3
