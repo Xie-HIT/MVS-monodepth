@@ -3,13 +3,13 @@
 ---
 ### Model ###
 Model:
-  # figure size: should not too large to exceed memory
-  height: 480
-  width: 640
+  # figure size: should not too large to exceed CUDA memory
+  height: 224
+  width: 320
 
   # monodepth2 weight path
-  monodepth2_encoder_path: "../thirdparty/models/MS/Monodepth2-Self/models/weights_19/encoder.pth"
-  monodepth2_decoder_path: "../thirdparty/models/MS/Monodepth2-Self/models/weights_19/depth.pth"
+  monodepth2_encoder_path: "./thirdparty/models/MS/Monodepth2-Self/models/weights_19/encoder.pth"
+  monodepth2_decoder_path: "./thirdparty/models/MS/Monodepth2-Self/models/weights_19/depth.pth"
 
   # feature pyramid
   pyramid_scale: 2.0
@@ -18,9 +18,9 @@ Model:
   # scale prediction
   monodepth2_min_depth: 0.1
   monodepth2_max_depth: 100.0
-  min_depth: 0.01
+  min_depth: 0.02
   max_depth: 10.0
-  scale_step: 0.01
+  scale_step: 0.02
 
   # depth prediction
   num_depth: [17, 17, 9]
@@ -31,6 +31,11 @@ Model:
 ### Loss ###
 Loss:
   norm: "L1"
+  weight:
+    scale: 1.0
+    depth_stage1: 0.25
+    depth_stage2: 0.5
+    depth_stage3: 1.0
 
 ---
 ### Training ###
@@ -43,40 +48,31 @@ Training:
   Replica:
 
     path: "/media/xiechen/HDD/benchmark/tandem_replica"
+    save_path: "./save/training"
     view_selection:
       num_views: 3
       data_dilation: 4
       data_stride: 1
-    device: "cuda"
     num_workers: 3
     epochs: 16
-    batch_size: 16
+    batch_size: 4
     learing_rate:
       lr: 0.001
-      downscale_factor: 2
-      downscale_epoch: [ 10, 12, 14 ]
-    augment:
-      crop: True
-      flip: True
-      gamma: True
+      milestones: [10, 12, 14]
+      gamma: 0.5
 
 
   DTU:
 
     path: "xxx"
     view_selection: "xxx"
-    device: "cuda"
     num_workers: 3
     epochs: 16  # PatchmatchNet: 8
     batch_size: 16  # PatchmatchNet: 4
     learing_rate:
       lr: 0.001
-      downscale_factor: 2
-      downscale_epoch: [10, 12, 14]
-    augment:
-      crop: True
-      flip: True
-      gamma: True
+      milestones: [10, 12, 14]
+      gamma: 0.5
 
     # DTU split:
     # Validation set: scans {3, 5, 17, 21, 28, 35, 37, 38, 40, 43, 56, 59, 66, 67, 82, 86, 106, 117}.
@@ -94,38 +90,23 @@ Evaluation:
   Replica:
 
     path: "/media/xiechen/HDD/benchmark/tandem_replica"
+    save_path: "./save/evaluation"
     view_selection:
       num_views: 3
       data_dilation: 4
       data_stride: 1
-    device: "cuda"
-    num_workers: 3
-    batch_size: 16
-    save_path: "xxx"
 
 
   DTU:
 
     path: "xxx"
-    device: "cuda"
-    num_workers: 3
-    batch_size: "xxx"
-    save_path: "xxx"
 
 
   Tanks and Temples:
 
     path: "xxx"
-    device: "cuda"
-    num_workers: 3
-    batch_size: "xxx"
-    save_path: "xxx"
 
 
   KITTI:
 
     path: "xxx"
-    device: "cuda"
-    num_workers: 3
-    batch_size: "xxx"
-    save_path: "xxx"

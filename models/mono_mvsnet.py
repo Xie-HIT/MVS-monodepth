@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from module import *
+from .module import *
 from thirdparty import *
 from thirdparty.networks import DepthUncertaintyDecoder
 from thirdparty.monodepth2 import networks as legacy
@@ -47,13 +47,15 @@ class monoMVSNet(nn.Module):
         self.depth_interval = opt.model['depth_interval']
         self.depth_interal_ratio = opt.model['depth_interal_ratio']
 
-        # load monodepth2
+        # load monodepth2 and fix weight
         encoder = legacy.ResnetEncoder(num_layers=18, pretrained=False)
         encoder_path = opt.model['monodepth2_encoder_path']
         encoder_dict = torch.load(encoder_path)
         encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in encoder.state_dict()})
         encoder.eval()
         self.monodepth2_encoder = encoder
+        for param in self.monodepth2_encoder.parameters():
+            param.requires_grad = False
 
         decoder = DepthUncertaintyDecoder(encoder.num_ch_enc, num_output_channels=1, uncert=True, dropout=False)
         decoder_path = opt.model['monodepth2_decoder_path']
@@ -61,13 +63,15 @@ class monoMVSNet(nn.Module):
         decoder.load_state_dict(decoder_dict)
         decoder.eval()
         self.monodepth2_decoder = decoder
+        for param in self.monodepth2_decoder.parameters():
+            param.requires_grad = False
 
         # TODO: Can we change size without re-training monodepth2 ?
         #  ->   NO! You should keep same with training size while evaluation, and interpolate to original size later
         self.monodepth2_height = encoder_dict['height']  # 192
-        self.monodepth2_width = encoder_dict['width']    # 640
-        self.height = opt.model['height']                # 480
-        self.width = opt.model['width']                  # 640
+        self.monodepth2_width = encoder_dict['width']  # 640
+        self.height = opt.model['height']  # 480
+        self.width = opt.model['width']  # 640
 
     def forward(self, images, intrinsics, cam_to_world):
         """
@@ -80,15 +84,17 @@ class monoMVSNet(nn.Module):
         # run monodepth2
         with torch.no_grad():
             ref_image = images[:, 0, :]
-            ref_image = F.interpolate(ref_image, size=(self.monodepth2_height, self.monodepth2_width), mode='bilinear')
+            ref_image = F.interpolate(ref_image, size=(self.monodepth2_height, self.monodepth2_width),
+                                      mode='bilinear', align_corners=False)
             monodepth2_output = self.monodepth2_decoder(self.monodepth2_encoder(ref_image))
-            pred_disp, pred_depth = disp_to_depth(monodepth2_output[("disp", 0)],
-                                                  self.monodepth2_min_depth, self.monodepth2_max_depth)
+            _, pred_depth = disp_to_depth(monodepth2_output[("disp", 0)],
+                                          self.monodepth2_min_depth, self.monodepth2_max_depth)
             pred_uncert = torch.exp(monodepth2_output[("uncert", 0)])
             pred_uncert = (pred_uncert - torch.min(pred_uncert)) / (torch.max(pred_uncert) - torch.min(pred_uncert))
-            pred_disp = F.interpolate(pred_disp, size=(self.height, self.width), mode='bilinear')
-            pred_depth = F.interpolate(pred_depth, size=(self.height, self.width), mode='bilinear')
-            pred_uncert = F.interpolate(pred_uncert, size=(self.height, self.width), mode='bilinear')
+            # pred_disp = F.interpolate(pred_disp, size=(self.height, self.width), mode='bilinear', align_corners=False)
+            pred_depth = F.interpolate(pred_depth, size=(self.height, self.width), mode='bilinear', align_corners=False)
+            pred_uncert = F.interpolate(pred_uncert, size=(self.height, self.width), mode='bilinear', align_corners=False)
+            del monodepth2_output
 
             # show_image(pred_disp)
             # show_image(pred_uncert)
@@ -125,21 +131,24 @@ class monoMVSNet(nn.Module):
 
             # scale prediction and depth hypothesis
             if stage == 'stage1':
-                pred_depth_stage = F.interpolate(pred_depth, size=(height_stage, width_stage), mode='bilinear').squeeze(1)
+                pred_depth_stage = F.interpolate(pred_depth, size=(height_stage, width_stage), mode='bilinear',
+                                                 align_corners=False).squeeze(1)
                 pred_depth_stage = pred_depth_stage / pred_depth_stage.median()
                 pred_uncert_stage = F.interpolate(pred_uncert, size=(height_stage, width_stage), mode='bilinear',
-                                                  align_corners=True).squeeze(1)
+                                                  align_corners=False).squeeze(1)
                 scale = self.scale_prediction(features_stage, intrinsics_stage, cam_to_world, self.scale_hypo,
                                               pred_depth_stage, pred_uncert_stage)  # (B)
                 output["scale"] = scale
-                cur_depth = scale * pred_depth_stage
+                cur_depth = scale.unsqueeze(1).unsqueeze(1) * pred_depth_stage  # (B, H, W)
                 cur_depth[cur_depth < self.min_depth] = self.min_depth
                 cur_depth[cur_depth > self.max_depth] = self.max_depth
+                del pred_depth
             else:
                 cur_depth = depth.detach()
-                cur_depth = F.interpolate(cur_depth.unsqueeze(1), size=(height_stage, width_stage), mode='bilinear').squeeze(1)
+                cur_depth = F.interpolate(cur_depth.unsqueeze(1), size=(height_stage, width_stage), mode='bilinear',
+                                          align_corners=False).squeeze(1)
                 pred_uncert_stage = F.interpolate(pred_uncert, size=(height_stage, width_stage), mode='bilinear',
-                                                  align_corners=True).squeeze(1)
+                                                  align_corners=False).squeeze(1)
 
             depth_interval = (2 - pred_uncert_stage) / 2 * self.depth_interval * self.depth_interal_ratio[stage_idx]
             depth_hypo = self.depth_range_sample(cur_depth, self.num_depth[stage_idx],
@@ -154,6 +163,7 @@ class monoMVSNet(nn.Module):
 
 if __name__ == "__main__":
     import warnings
+
     warnings.simplefilter("ignore", UserWarning)
     import PIL.Image as pil
     import matplotlib.pyplot as plt

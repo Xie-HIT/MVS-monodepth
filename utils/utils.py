@@ -5,6 +5,9 @@ import PIL.Image as pil
 import matplotlib.pyplot as plt
 from torchvision import transforms
 import yaml
+import torch
+import numpy as np
+import random
 
 
 def read_image(image_path, size=None, crop=False):
@@ -61,6 +64,26 @@ def read_depth(depth_path, scale, size=None):
     # show_image(depth)
 
     return depth * scale
+
+
+def abs_error(pred, gt, mask=None):
+    """
+    https://github.com/kwea123/CasMVSNet_pl
+    """
+    if mask is None:
+        return (pred - gt).abs()
+    pred, gt = pred[mask], gt[mask]
+    return (pred - gt).abs()
+
+
+def acc_threshold(pred, gt, mask, threshold):
+    """
+    https://github.com/kwea123/CasMVSNet_pl
+    computes the percentage of pixels whose error is less than @threshold
+    """
+    errors = abs_error(pred, gt, mask)
+    acc_mask = errors < threshold
+    return acc_mask.float()
 
 
 class Option:

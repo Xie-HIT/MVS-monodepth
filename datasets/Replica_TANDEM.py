@@ -11,10 +11,10 @@ from utils.utils import *
 
 
 class Replica_TANDEM(Dataset):
-    def __init__(self, path, split, option):
+    def __init__(self, split, option):
         super(Replica_TANDEM, self).__init__()
-        self.root_path = path
         self.option = option
+        self.root_path = self.option.training['Replica']['path']
         self.width = self.option.model['width']
         self.height = self.option.model['height']
         assert self.width % 32 == 0 and self.height % 32 == 0
@@ -32,12 +32,12 @@ class Replica_TANDEM(Dataset):
         else:
             raise NotImplementedError('\'split\' can only choose from \'{}\' or \'{}\''.format('train', 'val'))
 
-        split_path = os.path.join(path, split + '.txt')
+        split_path = os.path.join(self.root_path, split + '.txt')
         with open(split_path, 'r') as f:
             line = f.readline()
             scenes = line.rstrip().split(' ')
         for scene in scenes:
-            scene_path = os.path.join(path, scene)
+            scene_path = os.path.join(self.root_path, scene)
 
             # read intrinsic
             scene_intrinsic_path = os.path.join(scene_path, 'camera.txt')
@@ -117,7 +117,7 @@ class Replica_TANDEM(Dataset):
         scale_x = float(self.width) / float(sample['width'])
         scale_y = float(self.height) / float(sample['height'])
 
-        intrinsic = sample['scene_intrinsic']
+        intrinsic = sample['scene_intrinsic'].copy()
         intrinsic[0] = intrinsic[0] * scale_x
         intrinsic[1] = intrinsic[1] * scale_y
 
@@ -131,25 +131,22 @@ class Replica_TANDEM(Dataset):
             images.append(image)
         images = torch.stack(images, dim=0)
 
-        # read depth map
-        depths = []
-        for view_idx in sample['views_idx']:
-            scene_depth_path = os.path.join(scene_path, 'depths', f'{view_idx:06d}.png')
-            scene_depth_scale_path = os.path.join(scene_path, 'depths', 'scale.txt')
-            with open(scene_depth_scale_path, 'r') as f:
-                line = f.readline()
-                line = line.rstrip().split(' ')
-                depth_scale = float(line[0])
-
-            depth = read_depth(scene_depth_path, depth_scale, size=(self.height, self.width)).squeeze(0)  # (H, W)
-            depths.append(depth)
+        # read depth map of reference frame
+        ref_idx = sample['views_idx'][0]
+        scene_depth_path = os.path.join(scene_path, 'depths', f'{ref_idx:06d}.png')
+        scene_depth_scale_path = os.path.join(scene_path, 'depths', 'scale.txt')
+        with open(scene_depth_scale_path, 'r') as f:
+            line = f.readline()
+            line = line.rstrip().split(' ')
+            depth_scale = float(line[0])
+        depth = read_depth(scene_depth_path, depth_scale, size=(self.height, self.width)).squeeze(0)  # (H, W)
 
         # multi-stage depth
-        depth_stage1 = self.resize(depths, size=(int(self.height / self.pyramid_scale ** 2),
-                                                 int(self.width / self.pyramid_scale ** 2)))
-        depth_stage2 = self.resize(depths, size=(int(self.height / self.pyramid_scale),
-                                                 int(self.width / self.pyramid_scale)))
-        depth_stage3 = depths
+        depth_stage1 = self.resize(depth, size=(int(self.height / self.pyramid_scale ** 2),
+                                                int(self.width / self.pyramid_scale ** 2)))
+        depth_stage2 = self.resize(depth, size=(int(self.height / self.pyramid_scale),
+                                                int(self.width / self.pyramid_scale)))
+        depth_stage3 = depth
 
         # make depth mask based on [min_depth, max_depth]
         depth_stage1, depth_mask_stage1 = self.mask_depth(depth_stage1,
@@ -168,37 +165,30 @@ class Replica_TANDEM(Dataset):
             "intrinsics": intrinsics,         # (V) (3, 3)
             "cam_to_world": poses,            # (V) (4, 4)
             "depth": {
-                "stage1": depth_stage1,       # (V) (H, W)
-                "stage2": depth_stage2,       # (V) (H, W)
-                "stage3": depth_stage3        # (V) (H, W)
+                "stage1": depth_stage1,       # (H, W)
+                "stage2": depth_stage2,       # (H, W)
+                "stage3": depth_stage3        # (H, W)
             },
             "depth_mask": {
-                "stage1": depth_mask_stage1,  # (V) (H, W)
-                "stage2": depth_mask_stage2,  # (V) (H, W)
-                "stage3": depth_mask_stage3   # (V) (H, W)
+                "stage1": depth_mask_stage1,  # (H, W)
+                "stage2": depth_mask_stage2,  # (H, W)
+                "stage3": depth_mask_stage3   # (H, W)
             }
         }
 
         return sample
 
     @staticmethod
-    def resize(images: list, size: tuple):
-        resized_images = []
-        for image in images:
-            resized_image = F.interpolate(image.unsqueeze(0).unsqueeze(0), size=size,
-                                          mode='bilinear', align_corners=False)
-            resized_images.append(resized_image.squeeze())
-        return resized_images
+    def resize(image: torch.Tensor, size: tuple):
+        resized_image = F.interpolate(image.unsqueeze(0).unsqueeze(0), size=size, mode='bilinear', align_corners=False)
+        return resized_image.squeeze()
 
     @staticmethod
-    def mask_depth(depths: list, min_depth: float, max_depth: float):
-        depth_masks = []
-        for depth in depths:
-            depth_mask = torch.logical_and(depth >= min_depth, depth <= max_depth)
-            depth[torch.logical_not(depth_mask)] = 0
-            depth_mask = depth_mask.type(depth.dtype)
-            depth_masks.append(depth_mask)
-        return depths, depth_masks
+    def mask_depth(depth: torch.Tensor, min_depth: float, max_depth: float):
+        depth_mask = torch.logical_and(depth >= min_depth, depth <= max_depth)
+        depth[torch.logical_not(depth_mask)] = 0
+
+        return depth, depth_mask
 
 
 if __name__ == "__main__":
@@ -206,6 +196,6 @@ if __name__ == "__main__":
     opt = Option()
     opt.read('../config/default.yaml')
 
-    path = opt.training['Replica']['path']
-    dataset = Replica_TANDEM(path=path, split='train', option=opt)
+    dataset = Replica_TANDEM(split='train', option=opt)
     test_sample = dataset[10598]
+    print('Have {} samples'.format(len(dataset)))
