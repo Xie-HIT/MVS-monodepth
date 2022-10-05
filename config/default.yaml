@@ -48,7 +48,6 @@ Training:
   Replica:
 
     path: "/media/xiechen/HDD/benchmark/tandem_replica"
-    save_path: "./save/training"
     view_selection:
       num_views: 3
       data_dilation: 4
@@ -90,7 +89,6 @@ Evaluation:
   Replica:
 
     path: "/media/xiechen/HDD/benchmark/tandem_replica"
-    save_path: "./save/evaluation"
     view_selection:
       num_views: 3
       data_dilation: 4

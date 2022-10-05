@@ -12,6 +12,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelSummary
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from pytorch_lightning.loggers import WandbLogger
 
 from datasets.Replica_TANDEM import Replica_TANDEM
 from models import monoMVSNet
@@ -68,10 +69,20 @@ class LitNetwork(pl.LightningModule):
         self.learning_rate = self.option.training['Replica']['learing_rate']['lr']
         self.milestones = self.option.training['Replica']['learing_rate']['milestones']
         self.gamma = self.option.training['Replica']['learing_rate']['gamma']
-        self.train_save_path = self.option.training['Replica']['save_path']
 
-        # TODO: not used yet
-        self.eval_save_path = self.option.evaluation['Replica']['save_path']
+        # save to wandb
+        config = {
+            'epochs': self.epochs,
+            'batch_size': self.batch_size,
+            'num_workers': self.num_workers,
+            'learning_rate': self.learning_rate,
+            'lr_milestones': self.milestones,
+            'lr_gamma': self.gamma,
+            'loss/type': self.loss_type,
+            'loss/weight': [self.weight_scale, self.weight_depth_stage1,
+                            self.weight_depth_stage2, self.weight_depth_stage3]
+        }
+        self.save_hyperparameters(config)
 
     def forward(self, sample):
         return self.model(sample)
@@ -153,18 +164,25 @@ if __name__ == "__main__":
     opt = Option()
     opt.read('./config/default.yaml')
 
-    # reproducibility
+    # for reproducibility and distribute training
     pl.seed_everything(42, workers=True)
 
     # model
     network = LitNetwork(opt)
 
+    # wandb instance
+    wandb_logger = WandbLogger(project="monoMVSNet")
+    wandb_logger.watch(network, log="all", log_freq=1)
+
     # training
     trainer = pl.Trainer(min_epochs=10, max_epochs=network.epochs,
-                         auto_scale_batch_size=True, accumulate_grad_batches=1, auto_lr_find=True,
+                         auto_scale_batch_size=False, accumulate_grad_batches=1,
+                         auto_lr_find=True,
                          track_grad_norm=-1, gradient_clip_val=10.0,
-                         gpus=1, num_nodes=1, sync_batchnorm=True,
-                         fast_dev_run=True, deterministic=True, default_root_dir=network.train_save_path,
+                         gpus=-1, num_nodes=1, sync_batchnorm=True,  # [strategy='ddp'] to choose distributed backend
+                         logger=WandbLogger(project="monoMVSNet"),
+                         fast_dev_run=False,  # debug mode will disable logger
+                         deterministic=True,
                          callbacks=[EarlyStopping(monitor="val_loss", mode="min")])
     torch.use_deterministic_algorithms(False)  # median() will use non-determinstic method
     trainer.tune(network)  # find the best learning rate
